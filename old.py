@@ -4,11 +4,11 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import bs4
 import fitz
-import pickle
 from langchain_core.documents import Document
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_groq import ChatGroq
-from langchain_community.retrievers import BM25Retriever
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -23,21 +23,25 @@ if not groq_api_key:
     st.error("❌ GROQ_API_KEY not found in .env file")
     st.stop()
 
-BM25_INDEX_PATH = "bm25_index.pkl"  # single pickle file for the BM25 index
+FAISS_INDEX_PATH = "faiss_index"  # folder where index is saved on disk
 
+def get_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"}
+    )
 
 def load_website(url):
     loader = WebBaseLoader(
         web_paths=[url],
         bs_kwargs={
             "parse_only": bs4.SoupStrainer(
-                ["p", "table", "tr", "td", "th", "h1", "h2", "h3", "li", "code"]
+                ["p", "table", "tr", "td", "th", "h1", "h2", "h3", "li","code"]
             )
         }
     )
     docs = loader.load()
     return [doc for doc in docs if doc.page_content.strip()]
-
 
 def load_pdfs_from_folder(folder):
     all_docs = []
@@ -55,10 +59,9 @@ def load_pdfs_from_folder(folder):
                 ))
     return all_docs
 
-
 def build_and_save_index():
-    """Load all sources, build BM25 index, save to disk."""
-    with st.spinner("Building BM25 index for the first time — this won't happen again..."):
+    """Load all sources, build FAISS index, save to disk."""
+    with st.spinner("Building index for the first time — this won't happen again..."):
         urls = [
             "https://www.django-rest-framework.org/api-guide/requests/",
             "https://www.django-rest-framework.org/api-guide/responses/",
@@ -101,30 +104,31 @@ def build_and_save_index():
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         final_documents = splitter.split_documents(all_docs)
 
-        # BM25Retriever is built directly from documents — no embeddings needed
-        retriever = BM25Retriever.from_documents(final_documents)
-        retriever.k = 3  # return top-3 chunks
+        embeddings = get_embeddings()
+        vector_store = FAISS.from_documents(final_documents, embeddings)
 
-        # Persist the retriever object to disk with pickle
-        with open(BM25_INDEX_PATH, "wb") as f:
-            pickle.dump(retriever, f)
-
-        st.success(f"✅ BM25 index built and saved — {len(final_documents)} chunks indexed")
-        return retriever
-
+        # Save to disk — next run will load from here instead
+        vector_store.save_local(FAISS_INDEX_PATH)
+        st.success(f"✅ Index built and saved — {len(final_documents)} chunks indexed")
+        return vector_store
 
 # ── Load or build index ───────────────────────────────────────────────────────
-if "retriever" not in st.session_state:
-    if os.path.exists(BM25_INDEX_PATH):
-        # Index already exists on disk — just load it (fast, no model downloads)
-        with open(BM25_INDEX_PATH, "rb") as f:
-            st.session_state.retriever = pickle.load(f)
-        st.success("✅ BM25 index loaded from disk")
+if "vector_store" not in st.session_state:
+    embeddings = get_embeddings()
+
+    if os.path.exists(FAISS_INDEX_PATH):
+        # Index already exists on disk — just load it (fast)
+        st.session_state.vector_store = FAISS.load_local(
+            FAISS_INDEX_PATH,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
+        st.success("✅ Index loaded from disk")
     else:
         # First run — build and save
-        st.session_state.retriever = build_and_save_index()
+        st.session_state.vector_store = build_and_save_index()
 
-st.title("Django REST Framework RAG (Vectorless / BM25)")
+st.title("Django REST Framework RAG")
 
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
 
@@ -138,8 +142,10 @@ Framework. If the question is not about Django REST Framework, say you don't kno
     ("human", "{input}")
 ])
 
+retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
+
 chain = (
-    {"context": st.session_state.retriever, "input": RunnablePassthrough()}
+    {"context": retriever, "input": RunnablePassthrough()}
     | prompt_template
     | llm
     | StrOutputParser()
@@ -156,9 +162,10 @@ if user_prompt:
 # Optional: button to force rebuild if sources change
 with st.sidebar:
     st.header("Index Management")
-    if st.button("🔄 Rebuild Index"):
-        if os.path.exists(BM25_INDEX_PATH):
-            os.remove(BM25_INDEX_PATH)
-        if "retriever" in st.session_state:
-            del st.session_state["retriever"]
+    if st.button("🔄 Reload"):
+        import shutil
+        if os.path.exists(FAISS_INDEX_PATH):
+            shutil.rmtree(FAISS_INDEX_PATH)
+        if "vector_store" in st.session_state:
+            del st.session_state["vector_store"]
         st.rerun()
