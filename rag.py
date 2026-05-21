@@ -36,7 +36,7 @@ def load_website(url):
         web_paths=[url],
         bs_kwargs={
             "parse_only": bs4.SoupStrainer(
-                ["p", "table", "tr", "td", "th", "h1", "h2", "h3", "li"]
+                ["p", "table", "tr", "td", "th", "h1", "h2", "h3", "li","code"]
             )
         }
     )
