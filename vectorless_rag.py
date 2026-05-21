@@ -86,7 +86,9 @@ def build_and_save_index():
             "https://www.django-rest-framework.org/api-guide/exceptions/",
             "https://www.django-rest-framework.org/api-guide/status-codes/",
             "https://www.django-rest-framework.org/api-guide/testing/",
-            "https://www.django-rest-framework.org/api-guide/settings/"
+            "https://www.django-rest-framework.org/api-guide/settings/",
+            "https://www.django-rest-framework.org/topics/internationalization/",
+            "https://www.django-rest-framework.org/topics/rest-hypermedia-hateoas/"
         ]
 
         all_docs = []
