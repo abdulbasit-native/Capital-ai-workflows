@@ -10,6 +10,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 import time
 from dotenv import load_dotenv
 
@@ -61,7 +62,7 @@ def build_and_save_index():
         all_docs = load_pdfs_from_folder(PDF_FOLDER)
 
         if not all_docs:
-            st.error("❌ No content extracted from PDFs. Add PDF files to the 'workflows' folder.")
+            st.error("❌ No content extracted from PDFs. Add PDF files to the 'data' folder.")
             st.stop()
 
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -90,7 +91,7 @@ if "vector_store" not in st.session_state:
         st.session_state.vector_store = build_and_save_index()
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-st.title("📄 Capital AI Workflows RAG Assistant")
+st.title("📄 PDF RAG Assistant")
 st.caption(f"Answering questions from PDFs in the `{PDF_FOLDER}/` folder")
 
 llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
@@ -106,43 +107,26 @@ within the context, say you don't know.
 
 retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
 
+chain = (
+    {"context": retriever, "input": RunnablePassthrough()}
+    | prompt_template
+    | llm
+    | StrOutputParser()
+)
+
 user_prompt = st.text_input("Ask a question about your PDFs:")
 
 if user_prompt:
     start = time.process_time()
-
-    # Retrieve relevant chunks with metadata
-    retrieved_docs = retriever.invoke(user_prompt)
-
-    # Build context string for the prompt
-    context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-
-    # Run the LLM
-    messages = prompt_template.format_messages(context=context, input=user_prompt)
-    response = llm.invoke(messages)
-    answer = StrOutputParser().invoke(response)
-
-    st.write(answer)
-
-    # ── References ────────────────────────────────────────────────────────────
-    st.divider()
-    st.markdown("**📚 Sources:**")
-
-    seen = set()
-    for doc in retrieved_docs:
-        source = doc.metadata.get("source", "Unknown")
-        page = doc.metadata.get("page", "?")
-        ref_key = (source, page)
-        if ref_key not in seen:
-            seen.add(ref_key)
-            st.markdown(f"- 📄 `{source}` — Page {page}")
-
+    response = chain.invoke(user_prompt)
+    st.write(response)
     st.caption(f"Response time: {time.process_time() - start:.2f}s")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("📁 Index Management")
 
+    # Show indexed PDFs
     if os.path.exists(PDF_FOLDER):
         pdf_files = [f for f in os.listdir(PDF_FOLDER) if f.endswith(".pdf")]
         if pdf_files:
